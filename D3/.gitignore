@@ -1,0 +1,10 @@
+*.pptx
+*.json
+fruits.txt
+.DS_Store
+*.vscode
+*.ipynb
+*.ipynb_checkpoints
+04-python-for-data-manipulation/statistics_calculator*
+venv/
+*.pdf
