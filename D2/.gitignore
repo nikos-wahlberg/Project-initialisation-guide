@@ -1,0 +1,10 @@
+# Environments
+venv/
+env/
+
+# Course Materials
+*.pdf
+
+# Python temporary files
+__pycache__/
+*.py[cod]
