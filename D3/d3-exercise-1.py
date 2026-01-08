@@ -19,5 +19,3 @@ print(f"Median: {median(all_numbers)}")
 print(f"Mode: {mode(all_numbers)}")
 
 
-
-

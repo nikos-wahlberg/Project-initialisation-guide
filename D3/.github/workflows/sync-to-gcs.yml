@@ -1,0 +1,213 @@
+name: Sync Training Materials to GCS
+on:
+  push:
+    branches:
+      - main
+
+env:
+  GCS_BUCKET: skillioni-training-materials
+  PROJECT_ID: skillioni-v3
+  LOCATION: europe-north1
+  RAG_CORPUS: projects/skillioni-v3/locations/europe-north1/ragCorpora/2305843009213693952
+
+jobs:
+  sync-to-gcs:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      # Extract repository name
+      - name: Extract Repository Name
+        run: |
+          echo "REPO_NAME=${GITHUB_REPOSITORY#*/}" >> $GITHUB_ENV
+
+      # Build clean staging directory WITH FILENAME METADATA
+      - name: Build TXT/PDF-only staging directory with metadata
+        run: |
+          set -euo pipefail
+
+          STAGING_DIR=_gcs_sync
+          rm -rf "$STAGING_DIR"
+          mkdir -p "$STAGING_DIR"
+
+          # Set timestamp for all files (consistent across entire sync)
+          SYNC_TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M UTC")
+          SYNC_DATE=$(date -u +"%Y-%m-%d")
+          
+          # Function to extract module info from filename
+          # e.g., "PY-01-exercises.txt" -> includes repo, module, document, topics, and timestamp
+          extract_metadata() {
+            local filename="$1"
+            local basename=$(basename "$filename")
+            local name_no_ext="${basename%.*}"
+            
+            echo "=== DOCUMENT METADATA ==="
+            echo "Repository: $REPO_NAME"
+            echo "Last Updated: $SYNC_TIMESTAMP"
+            echo "Version Date: $SYNC_DATE"
+            
+            # Try to match pattern like "PY-01-exercises" or "AI-05-slides-intro"
+            if [[ "$name_no_ext" =~ ^([A-Z]{2,}-[0-9]{2})(-(.+))?$ ]]; then
+              local module_code="${BASH_REMATCH[1]}"
+              local topics="${BASH_REMATCH[3]:-}"
+              topics="${topics//-/ }"  # Replace dashes with spaces
+              topics="${topics//_/ }"  # Replace underscores with spaces
+              
+              echo "Module: $module_code"
+              echo "Document: $basename"
+              if [[ -n "$topics" ]]; then
+                echo "Topics: $topics"
+              fi
+            else
+              # No module pattern, just add filename
+              echo "Document: $basename"
+            fi
+            
+            echo "========================="
+            echo ""
+          }
+
+          # Function to copy text file with metadata prepended
+          copy_with_metadata() {
+            local src="$1"
+            local dst="$2"
+            mkdir -p "$(dirname "$dst")"
+            
+            # Prepend metadata, then original content
+            {
+              extract_metadata "$dst"
+              cat "$src"
+            } > "$dst"
+          }
+
+          # ---- MD → TXT (with metadata) ----
+          find . -type f -name "*.md" -not -path "./.git/*" -print0 |
+          while IFS= read -r -d '' file; do
+            target="$STAGING_DIR/${file#./}"
+            copy_with_metadata "$file" "${target%.md}.txt"
+          done
+
+          # ---- CSV → TXT (with metadata) ----
+          find . -type f -name "*.csv" -not -path "./.git/*" -print0 |
+          while IFS= read -r -d '' file; do
+            target="$STAGING_DIR/${file#./}"
+            copy_with_metadata "$file" "${target%.csv}.txt"
+          done
+
+          # ---- JSON → TXT (with metadata) ----
+          find . -type f -name "*.json" \
+            -not -name "gha-*.json" \
+            -not -path "./.git/*" \
+            -not -path "./.github/*" \
+            -print0 |
+          while IFS= read -r -d '' file; do
+            target="$STAGING_DIR/${file#./}"
+            copy_with_metadata "$file" "${target%.json}.txt"
+          done
+
+          # ---- Existing TXT (with metadata) ----
+          find . -type f -name "*.txt" -not -path "./.git/*" -print0 |
+          while IFS= read -r -d '' file; do
+            target="$STAGING_DIR/${file#./}"
+            copy_with_metadata "$file" "$target"
+          done
+
+          # ---- PDFs: Extract text, prepend metadata, create searchable .txt ----
+          # Requires pdftotext (installed in next step if PDFs exist)
+          PDF_COUNT=$(find . -type f -name "*.pdf" -not -path "./.git/*" | wc -l)
+          
+          if [[ "$PDF_COUNT" -gt 0 ]]; then
+            echo "Found $PDF_COUNT PDF files, installing pdftotext..."
+            sudo apt-get update -qq && sudo apt-get install -qq -y poppler-utils
+          fi
+          
+          find . -type f -name "*.pdf" -not -path "./.git/*" -print0 |
+          while IFS= read -r -d '' file; do
+            target="$STAGING_DIR/${file#./}"
+            mkdir -p "$(dirname "$target")"
+            
+            # Extract text from PDF and prepend metadata
+            txt_target="${target%.pdf}.txt"
+            
+            echo "  Processing PDF: $(basename "$file")"
+            
+            # Try to extract text from PDF
+            if pdftotext -layout "$file" - 2>/dev/null | head -c 100 | grep -q '[a-zA-Z]'; then
+              # PDF has extractable text
+              {
+                extract_metadata "$txt_target"
+                echo "--- Original PDF: $(basename "$file") ---"
+                echo ""
+                pdftotext -layout "$file" -
+              } > "$txt_target"
+              echo "    ✓ Text extracted successfully"
+            else
+              # PDF might be scanned/image-only - create metadata-only file
+              {
+                extract_metadata "$txt_target"
+                echo "--- Original PDF: $(basename "$file") ---"
+                echo ""
+                echo "[Note: This PDF contains images or scanned content that could not be extracted as text.]"
+                echo "[The document filename and module information above can still be used for searching.]"
+              } > "$txt_target"
+              echo "    ⚠ No extractable text (scanned/image PDF)"
+            fi
+            
+            # Also keep original PDF for reference (optional - comment out to save space)
+            # cp "$file" "$target"
+          done
+
+          echo "✓ Staging directory built with filename metadata"
+          echo "  Files processed:"
+          find "$STAGING_DIR" -type f | wc -l
+
+      # Authenticate with Google Cloud via OIDC
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/152491460941/locations/global/workloadIdentityPools/github-pool/providers/github-provider-main
+          service_account: github-actions-sync@skillioni-v3.iam.gserviceaccount.com
+
+      # Install gcloud
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      # Sync staging dir → GCS (delete removed files)
+      - name: Sync TXT & PDF to GCS (clean mirror)
+        run: |
+          gcloud storage rsync \
+            --recursive \
+            --delete-unmatched-destination-objects \
+            _gcs_sync \
+            gs://${{ env.GCS_BUCKET }}/${{ env.REPO_NAME }}
+
+      # Optional: Trigger RAG corpus re-import
+      # Uncomment if you want automatic re-indexing after sync
+      # - name: Trigger RAG corpus re-import
+      #   run: |
+      #     pip install google-cloud-aiplatform
+      #     python - <<EOF
+      #     import vertexai
+      #     from vertexai import rag
+      #     
+      #     vertexai.init(project="${{ env.PROJECT_ID }}", location="${{ env.LOCATION }}")
+      #     
+      #     # Import all files from GCS
+      #     paths = ["gs://${{ env.GCS_BUCKET }}/${{ env.REPO_NAME }}/"]
+      #     
+      #     print(f"Importing files from {paths[0]} to corpus...")
+      #     rag.import_files(
+      #         corpus_name="${{ env.RAG_CORPUS }}",
+      #         paths=paths,
+      #         chunk_size=1024,
+      #         chunk_overlap=200,
+      #     )
+      #     print("✓ RAG corpus import triggered")
+      #     EOF
+

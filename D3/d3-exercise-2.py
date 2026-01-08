@@ -15,3 +15,14 @@ print("JSON string", js_str)
 
 with open("d3-test-json.json", "w") as f:
     f.write(js_str)
+
+
+with open("d3-test-json.json", "r") as f:
+    loaded_item = js.load(f)
+
+print(loaded_item)
+print(f"Name: {loaded_item['name']}")
+print(f"Bookmark-page: {loaded_item["bookmark-page"]}")
+
+
+

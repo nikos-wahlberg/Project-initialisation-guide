@@ -1,0 +1,9 @@
+.git/
+.github/
+.gitignore
+.gcloudignore
+node_modules/
+__pycache__/
+*.DS_Store
+gha-creds-*.json
+venv/
