@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+Thumbs.db
+desktop.ini
+*.csv
+*.json
+*.env
+.ipynb_checkpoints/
